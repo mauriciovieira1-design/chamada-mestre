@@ -31,13 +31,17 @@ Para instalar no iPhone, publique a pasta em um endereço HTTPS e use
 ## Google Drive
 
 1. Crie um projeto no Google Cloud.
-2. Ative a Google Drive API.
+2. Ative a Google Drive API e a Google Picker API.
 3. Crie um OAuth Client ID do tipo aplicativo Web.
 4. Adicione o domínio HTTPS do aplicativo às origens JavaScript autorizadas.
-5. No aplicativo, abra a engrenagem e informe:
+5. Crie uma chave de API restrita ao domínio do aplicativo e à Google Picker API.
+6. No aplicativo, abra a engrenagem e informe:
    - OAuth Client ID;
-   - ID do arquivo XLSX no Google Drive.
+   - chave de API;
+   - número do projeto Google Cloud.
+7. Toque em `Escolher planilha no Google Drive` e selecione o arquivo XLSX.
 
-O aplicativo usa o escopo `drive` para abrir e atualizar o arquivo existente
-informado pelo ID. Para uso pessoal, a conta deve ser adicionada como usuária
-de teste na tela de consentimento OAuth enquanto o projeto estiver em teste.
+O aplicativo usa o escopo limitado `drive.file`. Ele pode abrir e atualizar
+somente a planilha escolhida pelo usuário no seletor oficial do Google. Para
+uso pessoal, a conta deve ser adicionada como usuária de teste na tela de
+consentimento OAuth enquanto o projeto estiver em teste.

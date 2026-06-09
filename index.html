@@ -13,6 +13,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -32,7 +33,7 @@
       </div>
 
       <div class="card actions-card">
-        <button id="btn-drive" class="primary">Abrir do Google Drive</button>
+        <button id="btn-drive" class="primary">Escolher planilha no Google Drive</button>
         <label class="secondary file-button">
           Abrir arquivo do aparelho
           <input id="file-input" type="file" accept=".xlsx">
@@ -110,13 +111,17 @@
         <h2>Google Drive</h2>
         <button value="cancel" class="icon-btn">×</button>
       </div>
-      <p class="hint">Informe o OAuth Client ID e o ID do arquivo XLSX no Drive.</p>
+      <p class="hint">Estes três dados vêm do seu projeto no Google Cloud. O app terá acesso somente à planilha que você escolher.</p>
       <label>OAuth Client ID
         <input id="google-client-id" autocomplete="off" placeholder="...apps.googleusercontent.com">
       </label>
-      <label>ID do arquivo no Drive
-        <input id="google-file-id" autocomplete="off" placeholder="1AbC...">
+      <label>Chave de API
+        <input id="google-api-key" autocomplete="off" placeholder="AIza...">
       </label>
+      <label>Número do projeto
+        <input id="google-app-id" inputmode="numeric" autocomplete="off" placeholder="123456789012">
+      </label>
+      <div id="selected-drive-file" class="selected-file" hidden></div>
       <button id="btn-save-config" value="default" class="primary">Salvar configuração</button>
     </form>
   </dialog>

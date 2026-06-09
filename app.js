@@ -293,7 +293,10 @@ function download(bytes) {
 function driveConfig() {
   return {
     clientId: localStorage.getItem("mestre:google-client-id") || "",
-    fileId: localStorage.getItem("mestre:google-file-id") || ""
+    apiKey: localStorage.getItem("mestre:google-api-key") || "",
+    appId: localStorage.getItem("mestre:google-app-id") || "",
+    fileId: localStorage.getItem("mestre:google-file-id") || "",
+    fileName: localStorage.getItem("mestre:google-file-name") || ""
   };
 }
 
@@ -304,7 +307,7 @@ function requestDriveToken() {
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
-      scope: "https://www.googleapis.com/auth/drive",
+      scope: "https://www.googleapis.com/auth/drive.file",
       callback: response => {
         if (response.error) reject(new Error(response.error));
         else {
@@ -317,9 +320,75 @@ function requestDriveToken() {
   });
 }
 
-async function openFromDrive() {
-  const { fileId } = driveConfig();
-  if (!fileId) throw new Error("Configure o ID do arquivo no Google Drive.");
+function waitForGoogleLibrary(name, test) {
+  if (test()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (test()) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > 10000) {
+        clearInterval(timer);
+        reject(new Error(`${name} não carregou. Verifique sua internet e tente novamente.`));
+      }
+    }, 100);
+  });
+}
+
+async function loadPickerApi() {
+  await waitForGoogleLibrary("O seletor do Google", () => Boolean(window.gapi?.load));
+  if (window.google?.picker) return;
+  await new Promise((resolve, reject) => {
+    gapi.load("picker", {
+      callback: resolve,
+      onerror: () => reject(new Error("Não foi possível carregar o seletor do Google.")),
+      timeout: 10000,
+      ontimeout: () => reject(new Error("O seletor do Google demorou para responder."))
+    });
+  });
+}
+
+async function pickDriveFile() {
+  const { clientId, apiKey, appId } = driveConfig();
+  if (!clientId || !apiKey || !appId) {
+    throw new Error("Complete a configuração do Google Drive.");
+  }
+  await waitForGoogleLibrary("O login Google", () => Boolean(window.google?.accounts?.oauth2));
+  const token = state.accessToken || await requestDriveToken();
+  await loadPickerApi();
+
+  return new Promise((resolve, reject) => {
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setMimeTypes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+      .setIncludeFolders(false)
+      .setSelectFolderEnabled(false);
+    const picker = new google.picker.PickerBuilder()
+      .addView(view)
+      .setOAuthToken(token)
+      .setDeveloperKey(apiKey)
+      .setAppId(appId)
+      .setTitle("Escolha a planilha de frequência")
+      .setCallback(data => {
+        if (data.action === google.picker.Action.PICKED) {
+          const document = data.docs?.[0];
+          if (!document?.id) {
+            reject(new Error("O Google não informou o arquivo selecionado."));
+            return;
+          }
+          resolve({ id: document.id, name: document.name || "frequencia.xlsx" });
+        } else if (data.action === google.picker.Action.CANCEL) {
+          resolve(null);
+        }
+      })
+      .build();
+    picker.setVisible(true);
+  });
+}
+
+async function openFromDrive(file) {
+  const fileId = file?.id || driveConfig().fileId;
+  if (!fileId) throw new Error("Escolha uma planilha no Google Drive.");
   const token = state.accessToken || await requestDriveToken();
   const metaResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType`, {
     headers: { Authorization: `Bearer ${token}` }
@@ -330,6 +399,8 @@ async function openFromDrive() {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) throw new Error("Não foi possível baixar a planilha do Drive.");
+  localStorage.setItem("mestre:google-file-id", fileId);
+  localStorage.setItem("mestre:google-file-name", meta.name);
   parseWorkbook(new Uint8Array(await response.arrayBuffer()), meta.name, "drive");
 }
 
@@ -412,24 +483,38 @@ $("file-input").addEventListener("change", async event => {
 
 $("btn-drive").addEventListener("click", async () => {
   try {
-    await openFromDrive();
+    const file = await pickDriveFile();
+    if (file) await openFromDrive(file);
   } catch (error) {
     toast(error.message);
-    if (!driveConfig().clientId || !driveConfig().fileId) $("config-dialog").showModal();
+    const { clientId, apiKey, appId } = driveConfig();
+    if (!clientId || !apiKey || !appId) $("config-dialog").showModal();
   }
 });
 
 $("btn-config").addEventListener("click", () => {
   const config = driveConfig();
   $("google-client-id").value = config.clientId;
-  $("google-file-id").value = config.fileId;
+  $("google-api-key").value = config.apiKey;
+  $("google-app-id").value = config.appId;
+  $("selected-drive-file").hidden = !config.fileName;
+  $("selected-drive-file").textContent = config.fileName ? `Última planilha: ${config.fileName}` : "";
   $("config-dialog").showModal();
 });
 
 $("btn-save-config").addEventListener("click", event => {
   event.preventDefault();
-  localStorage.setItem("mestre:google-client-id", $("google-client-id").value.trim());
-  localStorage.setItem("mestre:google-file-id", $("google-file-id").value.trim());
+  const clientId = $("google-client-id").value.trim();
+  const apiKey = $("google-api-key").value.trim();
+  const appId = $("google-app-id").value.trim();
+  if (!clientId || !apiKey || !appId) {
+    toast("Preencha os três dados do Google Cloud.");
+    return;
+  }
+  localStorage.setItem("mestre:google-client-id", clientId);
+  localStorage.setItem("mestre:google-api-key", apiKey);
+  localStorage.setItem("mestre:google-app-id", appId);
+  state.accessToken = "";
   $("config-dialog").close();
   toast("Configuração salva neste aparelho.");
 });
