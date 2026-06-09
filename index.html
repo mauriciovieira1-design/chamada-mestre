@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Chamada Mestre</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/xlsx.mini.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">MESTRE</p>
+      <h1>Chamada</h1>
+    </div>
+    <button id="btn-config" class="icon-btn" aria-label="Configurar Google Drive">⚙</button>
+  </header>
+
+  <main>
+    <section id="view-home" class="view active">
+      <div class="hero card">
+        <span class="hero-icon">✓</span>
+        <h2>Frequência no iPhone</h2>
+        <p>Abra a planilha da Mestre, faça a chamada e salve sem alterar seu formato.</p>
+      </div>
+
+      <div class="card actions-card">
+        <button id="btn-drive" class="primary">Abrir do Google Drive</button>
+        <label class="secondary file-button">
+          Abrir arquivo do aparelho
+          <input id="file-input" type="file" accept=".xlsx">
+        </label>
+      </div>
+
+      <div id="home-status" class="status-card card">
+        <span class="status-dot"></span>
+        <div>
+          <strong>Pronto</strong>
+          <p>Selecione a planilha usada pela extensão Mestre.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-turmas" class="view">
+      <div class="section-head">
+        <button class="back" data-go="home">‹</button>
+        <div>
+          <p class="eyebrow">PLANILHA</p>
+          <h2 id="arquivo-nome">Frequência</h2>
+        </div>
+      </div>
+      <div id="turma-grid" class="turma-grid"></div>
+    </section>
+
+    <section id="view-aulas" class="view">
+      <div class="section-head">
+        <button class="back" data-go="turmas">‹</button>
+        <div>
+          <p class="eyebrow">TURMA</p>
+          <h2 id="turma-nome"></h2>
+        </div>
+      </div>
+      <p class="hint">Datas repetidas são horários diferentes. Escolha a aula correta.</p>
+      <div id="aula-list" class="aula-list"></div>
+    </section>
+
+    <section id="view-chamada" class="view">
+      <div class="sticky-head">
+        <div class="section-head compact">
+          <button class="back" data-go="aulas">‹</button>
+          <div>
+            <p id="chamada-turma" class="eyebrow"></p>
+            <h2 id="chamada-data"></h2>
+          </div>
+        </div>
+        <div class="summary">
+          <span><b id="count-presentes">0</b> presentes</span>
+          <span class="red"><b id="count-faltas">0</b> faltas</span>
+          <span class="amber"><b id="count-justificadas">0</b> justificadas</span>
+        </div>
+        <div class="toolbar">
+          <input id="busca" type="search" placeholder="Buscar aluno">
+          <button id="btn-desfazer" class="small-btn" disabled>Desfazer</button>
+        </div>
+      </div>
+
+      <div id="aluno-list" class="aluno-list"></div>
+      <div class="bottom-space"></div>
+      <div class="savebar">
+        <div id="draft-state">Rascunho salvo</div>
+        <button id="btn-salvar" class="primary">Salvar chamada</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="config-dialog">
+    <form method="dialog">
+      <div class="dialog-head">
+        <h2>Google Drive</h2>
+        <button value="cancel" class="icon-btn">×</button>
+      </div>
+      <p class="hint">Informe o OAuth Client ID e o ID do arquivo XLSX no Drive.</p>
+      <label>OAuth Client ID
+        <input id="google-client-id" autocomplete="off" placeholder="...apps.googleusercontent.com">
+      </label>
+      <label>ID do arquivo no Drive
+        <input id="google-file-id" autocomplete="off" placeholder="1AbC...">
+      </label>
+      <button id="btn-save-config" value="default" class="primary">Salvar configuração</button>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>
