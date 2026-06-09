@@ -1,14 +1,12 @@
-const CACHE = "chamada-mestre-v1";
+const CACHE = "chamada-mestre-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
-  "./vendor/xlsx.mini.min.js",
-  "./vendor/jszip.min.js",
-  "./assets/icon-192.png",
-  "./assets/icon-512.png"
+  "./icon-192.png",
+  "./icon-512.png"
 ];
 
 self.addEventListener("install", event => {
