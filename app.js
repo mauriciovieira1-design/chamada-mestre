@@ -46,6 +46,8 @@ function dateLabel(value) {
 
 function normalizedStatus(value) {
   const v = String(value ?? "").trim().toUpperCase();
+  if (v === "1") return "F";
+  if (v === "J") return "I";
   return v === "F" || v === "I" ? v : "0";
 }
 
@@ -89,7 +91,9 @@ function parseWorkbook(bytes, fileName, source = "local") {
     }
     lessons.forEach(lesson => {
       lesson.totalOccurrences = occurrences.get(lesson.label);
-      lesson.completedInFile = students.length > 0 && students.every(student => {
+      // Vazio tambem representa presenca. Uma coluna com qualquer registro
+      // indica chamada feita; uma coluna totalmente vazia continua pendente.
+      lesson.completedInFile = students.some(student => {
         const value = student.row[lesson.colIndex];
         return value !== null && value !== undefined && String(value).trim() !== "";
       });
