@@ -109,7 +109,7 @@ function parseWorkbook(bytes, fileName, source = "local") {
   state.fileName = fileName;
   state.source = source;
   state.turmas = turmas;
-  $("arquivo-nome").textContent = fileName;
+  $("arquivo-nome").textContent = "Prof. Maurício";
   renderTurmas();
   show("turmas");
 }
