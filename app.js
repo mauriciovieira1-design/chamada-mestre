@@ -89,6 +89,10 @@ function parseWorkbook(bytes, fileName, source = "local") {
     }
     lessons.forEach(lesson => {
       lesson.totalOccurrences = occurrences.get(lesson.label);
+      lesson.completedInFile = students.length > 0 && students.every(student => {
+        const value = student.row[lesson.colIndex];
+        return value !== null && value !== undefined && String(value).trim() !== "";
+      });
     });
 
     turmas.push({
@@ -111,12 +115,24 @@ function parseWorkbook(bytes, fileName, source = "local") {
 }
 
 function renderTurmas() {
-  $("turma-grid").innerHTML = state.turmas.map((turma, index) => `
-    <button class="turma-card" data-turma="${index}">
-      <strong>${escapeHtml(turma.name)}</strong>
-      <span>${turma.students.length} alunos · ${turma.lessons.length} aulas</span>
-    </button>
-  `).join("");
+  $("turma-grid").innerHTML = state.turmas.map((turma, index) => {
+    const completed = turma.lessons.filter(isLessonCompleted.bind(null, turma)).length;
+    const pending = turma.lessons.length - completed;
+    const status = pending === 0
+      ? `<span class="turma-status complete">✓ Todas realizadas</span>`
+      : `<span class="turma-status">${pending} chamada${pending === 1 ? "" : "s"} pendente${pending === 1 ? "" : "s"}</span>`;
+    return `
+      <button class="turma-card ${pending === 0 ? "complete" : ""}" data-turma="${index}">
+        <span class="turma-icon">${pending === 0 ? "✓" : pending}</span>
+        <span class="turma-copy">
+          <strong>${escapeHtml(turma.name)}</strong>
+          <span>${turma.students.length} alunos · ${completed}/${turma.lessons.length} realizadas</span>
+          ${status}
+        </span>
+        <span class="card-arrow">›</span>
+      </button>
+    `;
+  }).join("");
 }
 
 function completedKey(turma, lesson) {
@@ -127,15 +143,24 @@ function draftKey(turma, lesson) {
   return `mestre:draft:${state.fileName}:${turma.name}:${lesson.colIndex}`;
 }
 
+function isLessonCompleted(turma, lesson) {
+  return lesson.completedInFile || localStorage.getItem(completedKey(turma, lesson)) === "1";
+}
+
 function openTurma(index) {
   state.turma = state.turmas[index];
   $("turma-nome").textContent = state.turma.name;
   $("aula-list").innerHTML = state.turma.lessons.map((lesson, lessonIndex) => {
     const suffix = lesson.totalOccurrences > 1 ? ` · ${lesson.occurrence}º horário` : "";
-    const done = localStorage.getItem(completedKey(state.turma, lesson)) === "1";
+    const done = isLessonCompleted(state.turma, lesson);
     return `
-      <button class="aula-card ${done ? "done" : ""}" data-aula="${lessonIndex}">
-        <div><div class="date">${escapeHtml(lesson.label)}</div><span>Aula${suffix}</span></div>
+      <button class="aula-card ${done ? "done" : "pending"}" data-aula="${lessonIndex}">
+        <span class="lesson-state">${done ? "✓" : lessonIndex + 1}</span>
+        <span class="lesson-copy">
+          <span class="date">${escapeHtml(lesson.label)}</span>
+          <span>Aula${suffix}</span>
+        </span>
+        <span class="lesson-action">${done ? "Realizada" : "Fazer chamada"} <b>›</b></span>
       </button>
     `;
   }).join("");
@@ -143,7 +168,14 @@ function openTurma(index) {
 }
 
 function openLesson(index) {
-  state.aula = state.turma.lessons[index];
+  const lesson = state.turma.lessons[index];
+  if (isLessonCompleted(state.turma, lesson)) {
+    const reopen = window.confirm(
+      `A chamada de ${lesson.label}${lesson.totalOccurrences > 1 ? ` (${lesson.occurrence}º horário)` : ""} já foi realizada.\n\nDeseja abrir mesmo assim para conferir ou corrigir?`
+    );
+    if (!reopen) return;
+  }
+  state.aula = lesson;
   const draft = JSON.parse(localStorage.getItem(draftKey(state.turma, state.aula)) || "null");
   state.alunos = state.turma.students.map(student => ({
     rowIndex: student.rowIndex,
@@ -331,12 +363,14 @@ async function saveAttendance() {
       toast("Planilha salva sem alterar o modelo.");
     }
     localStorage.setItem(completedKey(state.turma, state.aula), "1");
+    state.aula.completedInFile = true;
     localStorage.removeItem(draftKey(state.turma, state.aula));
     state.alunos.forEach(student => {
       const sourceStudent = state.turma.students.find(item => item.rowIndex === student.rowIndex);
       if (sourceStudent) sourceStudent.row[state.aula.colIndex] = student.status;
     });
     $("draft-state").textContent = "Chamada salva";
+    renderTurmas();
   } catch (error) {
     toast(error.message);
   } finally {
@@ -413,4 +447,11 @@ $("btn-desfazer").addEventListener("click", () => {
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+if ((location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.search === "?test-model") {
+  fetch("MODELO -FREQUENCIA.xlsx")
+    .then(response => response.arrayBuffer())
+    .then(bytes => parseWorkbook(new Uint8Array(bytes), "MODELO -FREQUENCIA.xlsx", "local"))
+    .catch(error => toast(error.message));
 }

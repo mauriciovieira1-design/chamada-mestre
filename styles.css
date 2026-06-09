@@ -92,21 +92,68 @@ main { max-width: 760px; margin: auto; padding: 8px 14px 110px; }
 }
 .section-head { display: flex; gap: 12px; align-items: center; margin: 8px 0 18px; }
 .back { font-size: 2rem; line-height: 1; }
-.turma-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 11px; }
+.turma-grid { display: grid; gap: 11px; }
 .turma-card, .aula-card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 17px;
-  padding: 17px;
+  padding: 14px;
   text-align: left;
 }
+.turma-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0,1fr) 20px;
+  gap: 12px;
+  align-items: center;
+}
+.turma-card.complete { border-color: rgba(37,214,138,.55); background: rgba(20,66,52,.42); }
+.turma-icon, .lesson-state {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  background: rgba(93,130,255,.14);
+  color: var(--blue);
+  font-weight: 900;
+}
+.turma-card.complete .turma-icon { background: var(--green); color: #07130e; }
+.turma-copy { min-width: 0; display: grid; gap: 3px; }
 .turma-card strong { display: block; font-size: 1rem; }
 .turma-card span, .aula-card span { color: var(--muted); font-size: .78rem; }
+.turma-status { color: var(--amber) !important; font-weight: 750; }
+.turma-status.complete { color: var(--green) !important; }
+.card-arrow { font-size: 1.65rem !important; color: var(--muted); }
 .aula-list { display: grid; gap: 10px; margin-top: 15px; }
-.aula-card { display: flex; align-items: center; justify-content: space-between; }
+.lesson-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.lesson-legend span { display: flex; align-items: center; gap: 6px; }
+.legend-dot { width: 9px; height: 9px; border-radius: 50%; }
+.legend-dot.pending { background: var(--blue); }
+.legend-dot.completed { background: var(--green); }
+.aula-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0,1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+}
+.lesson-copy { display: grid; gap: 3px; min-width: 0; }
 .aula-card .date { font-size: 1.08rem; font-weight: 800; }
-.aula-card.done { border-color: rgba(37,214,138,.55); }
-.aula-card.done::after { content: "Salva"; color: var(--green); font-size: .75rem; font-weight: 800; }
+.aula-card.done {
+  border-color: rgba(37,214,138,.72);
+  background: linear-gradient(135deg, rgba(20,78,58,.72), rgba(18,52,47,.74));
+}
+.aula-card.done .lesson-state { background: var(--green); color: #07130e; }
+.aula-card.done .date { color: #eafff6; }
+.lesson-action { white-space: nowrap; font-weight: 750; color: var(--blue) !important; }
+.lesson-action b { font-size: 1.2rem; }
+.aula-card.done .lesson-action { color: var(--green) !important; }
 .sticky-head {
   position: sticky;
   top: 0;
@@ -208,5 +255,5 @@ dialog label { color: var(--muted); font-size: .82rem; display: grid; gap: 6px; 
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 @media (min-width: 620px) {
-  .turma-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .turma-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
