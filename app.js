@@ -8,7 +8,8 @@ const state = {
   aula: null,
   alunos: [],
   history: [],
-  accessToken: ""
+  accessToken: "",
+  tokenExpiresAt: 0
 };
 
 const $ = id => document.getElementById(id);
@@ -51,6 +52,42 @@ function normalizedStatus(value) {
   return v === "F" || v === "I" ? v : "0";
 }
 
+function openCacheDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("chamada-mestre", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("files");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveCachedWorkbook(bytes, fileName, source) {
+  const db = await openCacheDb();
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction("files", "readwrite");
+    transaction.objectStore("files").put({
+      bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+      fileName,
+      source,
+      savedAt: Date.now()
+    }, "current");
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+  db.close();
+}
+
+async function loadCachedWorkbook() {
+  const db = await openCacheDb();
+  const cached = await new Promise((resolve, reject) => {
+    const request = db.transaction("files").objectStore("files").get("current");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return cached;
+}
+
 function parseWorkbook(bytes, fileName, source = "local") {
   const workbook = XLSX.read(bytes, { type: "array", cellDates: true, cellFormula: true, raw: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -79,24 +116,23 @@ function parseWorkbook(bytes, fileName, source = "local") {
       }
     }
 
-    const occurrences = new Map();
-    const lessons = [];
+    const lessonGroups = new Map();
     for (let colIndex = 4; colIndex < row.length; colIndex++) {
       const value = row[colIndex];
       if (value === null || value === "") continue;
       const label = dateLabel(value);
-      const occurrence = (occurrences.get(label) || 0) + 1;
-      occurrences.set(label, occurrence);
-      lessons.push({ colIndex, label, occurrence });
+      if (!lessonGroups.has(label)) lessonGroups.set(label, { label, colIndexes: [] });
+      lessonGroups.get(label).colIndexes.push(colIndex);
     }
+    const lessons = [...lessonGroups.values()];
     lessons.forEach(lesson => {
-      lesson.totalOccurrences = occurrences.get(lesson.label);
-      // Vazio tambem representa presenca. Uma coluna com qualquer registro
-      // indica chamada feita; uma coluna totalmente vazia continua pendente.
-      lesson.completedInFile = students.some(student => {
-        const value = student.row[lesson.colIndex];
-        return value !== null && value !== undefined && String(value).trim() !== "";
-      });
+      lesson.totalOccurrences = lesson.colIndexes.length;
+      lesson.completedInFile = lesson.colIndexes.every(colIndex =>
+        students.some(student => {
+          const value = student.row[colIndex];
+          return value !== null && value !== undefined && String(value).trim() !== "";
+        })
+      );
     });
 
     turmas.push({
@@ -114,6 +150,7 @@ function parseWorkbook(bytes, fileName, source = "local") {
   state.source = source;
   state.turmas = turmas;
   $("arquivo-nome").textContent = "Prof. Maurício";
+  saveCachedWorkbook(state.bytes, fileName, source).catch(() => {});
   renderTurmas();
   show("turmas");
 }
@@ -140,11 +177,11 @@ function renderTurmas() {
 }
 
 function completedKey(turma, lesson) {
-  return `mestre:done:${state.fileName}:${turma.name}:${lesson.colIndex}`;
+  return `mestre:done:${state.fileName}:${turma.name}:${lesson.label}`;
 }
 
 function draftKey(turma, lesson) {
-  return `mestre:draft:${state.fileName}:${turma.name}:${lesson.colIndex}`;
+  return `mestre:draft:${state.fileName}:${turma.name}:${lesson.label}`;
 }
 
 function isLessonCompleted(turma, lesson) {
@@ -155,7 +192,7 @@ function openTurma(index) {
   state.turma = state.turmas[index];
   $("turma-nome").textContent = state.turma.name;
   $("aula-list").innerHTML = state.turma.lessons.map((lesson, lessonIndex) => {
-    const suffix = lesson.totalOccurrences > 1 ? ` · ${lesson.occurrence}º horário` : "";
+    const suffix = lesson.totalOccurrences > 1 ? ` · ${lesson.totalOccurrences} horários` : "";
     const done = isLessonCompleted(state.turma, lesson);
     return `
       <button class="aula-card ${done ? "done" : "pending"}" data-aula="${lessonIndex}">
@@ -175,21 +212,24 @@ function openLesson(index) {
   const lesson = state.turma.lessons[index];
   if (isLessonCompleted(state.turma, lesson)) {
     const reopen = window.confirm(
-      `A chamada de ${lesson.label}${lesson.totalOccurrences > 1 ? ` (${lesson.occurrence}º horário)` : ""} já foi realizada.\n\nDeseja abrir mesmo assim para conferir ou corrigir?`
+      `A chamada de ${lesson.label} já foi realizada.\n\nDeseja abrir mesmo assim para conferir ou corrigir?`
     );
     if (!reopen) return;
   }
   state.aula = lesson;
   const draft = JSON.parse(localStorage.getItem(draftKey(state.turma, state.aula)) || "null");
+  const sourceColumn = state.aula.colIndexes.find(colIndex =>
+    state.turma.students.some(student => String(student.row[colIndex] ?? "").trim() !== "")
+  ) ?? state.aula.colIndexes[0];
   state.alunos = state.turma.students.map(student => ({
     rowIndex: student.rowIndex,
     name: student.name,
-    status: draft?.[student.rowIndex] || normalizedStatus(student.row[state.aula.colIndex])
+    status: draft?.[student.rowIndex] || normalizedStatus(student.row[sourceColumn])
   }));
   state.history = [];
   $("chamada-turma").textContent = state.turma.name;
   $("chamada-data").textContent = state.aula.totalOccurrences > 1
-    ? `${state.aula.label} · ${state.aula.occurrence}º horário`
+    ? `${state.aula.label} · ${state.aula.totalOccurrences} horários`
     : state.aula.label;
   $("busca").value = "";
   renderStudents();
@@ -270,11 +310,15 @@ async function buildPatchedWorkbook() {
 
   state.alunos.forEach(student => {
     const excelRow = student.rowIndex + 1;
-    const address = `${colName(state.aula.colIndex)}${excelRow}`;
     const rowRegex = new RegExp(`<row\\b([^>]*\\br="${excelRow}"[^>]*)>[\\s\\S]*?<\\/row>`);
     const match = xml.match(rowRegex);
     if (!match) throw new Error(`Linha ${excelRow} não encontrada no modelo.`);
-    xml = xml.replace(match[0], patchCellInRow(match[0], address, student.status));
+    let rowXml = match[0];
+    state.aula.colIndexes.forEach(colIndex => {
+      const address = `${colName(colIndex)}${excelRow}`;
+      rowXml = patchCellInRow(rowXml, address, student.status);
+    });
+    xml = xml.replace(match[0], rowXml);
   });
 
   zip.file(sheetPath, xml);
@@ -304,10 +348,25 @@ function driveConfig() {
   };
 }
 
+function updateDriveUi() {
+  const config = driveConfig();
+  $("btn-drive").textContent = config.fileId
+    ? "Atualizar planilha do Google Drive"
+    : "Conectar ao Google Drive";
+  const status = $("home-status");
+  if (config.fileName) {
+    status.querySelector("strong").textContent = "Planilha memorizada";
+    status.querySelector("p").textContent = `${config.fileName} abre automaticamente neste aparelho.`;
+  }
+}
+
 function requestDriveToken() {
   const { clientId } = driveConfig();
   if (!clientId) return Promise.reject(new Error("Configure o OAuth Client ID."));
   if (!window.google?.accounts?.oauth2) return Promise.reject(new Error("O login Google ainda não carregou."));
+  if (state.accessToken && Date.now() < state.tokenExpiresAt - 60000) {
+    return Promise.resolve(state.accessToken);
+  }
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
@@ -316,11 +375,12 @@ function requestDriveToken() {
         if (response.error) reject(new Error(response.error));
         else {
           state.accessToken = response.access_token;
+          state.tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
           resolve(response.access_token);
         }
       }
     });
-    client.requestAccessToken({ prompt: state.accessToken ? "" : "consent" });
+    client.requestAccessToken({ prompt: "" });
   });
 }
 
@@ -405,6 +465,7 @@ async function openFromDrive(file) {
   if (!response.ok) throw new Error("Não foi possível baixar a planilha do Drive.");
   localStorage.setItem("mestre:google-file-id", fileId);
   localStorage.setItem("mestre:google-file-name", meta.name);
+  updateDriveUi();
   parseWorkbook(new Uint8Array(await response.arrayBuffer()), meta.name, "drive");
 }
 
@@ -428,13 +489,18 @@ async function saveAttendance() {
   button.textContent = "Salvando...";
   try {
     const bytes = await buildPatchedWorkbook();
+    state.bytes = bytes;
+    await saveCachedWorkbook(bytes, state.fileName, state.source);
+    let synced = false;
     if (state.source === "drive") {
-      await saveToDrive(bytes);
-      state.bytes = bytes;
-      toast("Chamada salva no Google Drive.");
+      try {
+        await saveToDrive(bytes);
+        synced = true;
+      } catch (error) {
+        toast("Salva no iPhone. Abra o Drive para sincronizar.");
+      }
     } else {
       download(bytes);
-      state.bytes = bytes;
       toast("Planilha salva sem alterar o modelo.");
     }
     localStorage.setItem(completedKey(state.turma, state.aula), "1");
@@ -442,9 +508,14 @@ async function saveAttendance() {
     localStorage.removeItem(draftKey(state.turma, state.aula));
     state.alunos.forEach(student => {
       const sourceStudent = state.turma.students.find(item => item.rowIndex === student.rowIndex);
-      if (sourceStudent) sourceStudent.row[state.aula.colIndex] = student.status;
+      if (sourceStudent) {
+        state.aula.colIndexes.forEach(colIndex => {
+          sourceStudent.row[colIndex] = student.status;
+        });
+      }
     });
     $("draft-state").textContent = "Chamada salva";
+    if (synced) toast(`Salva no Drive em ${state.aula.totalOccurrences} horário${state.aula.totalOccurrences > 1 ? "s" : ""}.`);
     renderTurmas();
   } catch (error) {
     toast(error.message);
@@ -487,12 +558,28 @@ $("file-input").addEventListener("change", async event => {
 
 $("btn-drive").addEventListener("click", async () => {
   try {
-    const file = await pickDriveFile();
-    if (file) await openFromDrive(file);
+    const config = driveConfig();
+    if (config.fileId) {
+      await openFromDrive();
+    } else {
+      const file = await pickDriveFile();
+      if (file) await openFromDrive(file);
+    }
   } catch (error) {
     toast(error.message);
     const { clientId, apiKey, appId } = driveConfig();
     if (!clientId || !apiKey || !appId) $("config-dialog").showModal();
+  }
+});
+
+$("btn-change-drive-file").addEventListener("click", async () => {
+  try {
+    const file = await pickDriveFile();
+    if (!file) return;
+    await openFromDrive(file);
+    $("config-dialog").close();
+  } catch (error) {
+    toast(error.message);
   }
 });
 
@@ -519,6 +606,7 @@ $("btn-save-config").addEventListener("click", event => {
   localStorage.setItem("mestre:google-api-key", apiKey);
   localStorage.setItem("mestre:google-app-id", appId);
   state.accessToken = "";
+  updateDriveUi();
   $("config-dialog").close();
   toast("Configuração salva neste aparelho.");
 });
@@ -537,6 +625,16 @@ $("btn-desfazer").addEventListener("click", () => {
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
+
+updateDriveUi();
+
+loadCachedWorkbook()
+  .then(cached => {
+    if (!cached?.bytes || state.bytes) return;
+    parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local");
+    toast("Planilha aberta do armazenamento seguro deste aparelho.");
+  })
+  .catch(() => {});
 
 if ((location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.search === "?test-model") {
   fetch("MODELO -FREQUENCIA.xlsx")

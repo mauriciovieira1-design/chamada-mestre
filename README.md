@@ -9,7 +9,8 @@ alunos. A planilha é selecionada pelo próprio usuário no aparelho ou no Drive
 
 - A planilha mantém a estrutura e as datas originais.
 - Datas repetidas continuam sendo datas iguais no Excel.
-- O aplicativo mostra `1º horário`, `2º horário` apenas na tela.
+- O aplicativo mostra uma única chamada por data.
+- Ao salvar, a mesma frequência é gravada em todos os horários repetidos daquela data.
 - Vazio ou `0` significa presente.
 - `F` significa falta.
 - `I` significa ausência justificada/enfermidade.
@@ -45,3 +46,8 @@ O aplicativo usa o escopo limitado `drive.file`. Ele pode abrir e atualizar
 somente a planilha escolhida pelo usuário no seletor oficial do Google. Para
 uso pessoal, a conta deve ser adicionada como usuária de teste na tela de
 consentimento OAuth enquanto o projeto estiver em teste.
+
+A planilha escolhida fica memorizada no aparelho. Uma cópia privada também é
+mantida no armazenamento local do PWA, permitindo abrir e fazer chamadas sem
+selecionar o arquivo novamente. Quando o acesso temporário do Google expirar,
+o aplicativo solicitará uma nova autorização somente ao sincronizar.
