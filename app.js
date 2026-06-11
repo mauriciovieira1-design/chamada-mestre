@@ -463,6 +463,21 @@ function waitForGoogleLibrary(name, test) {
   });
 }
 
+async function fetchWithTimeout(url, options = {}, timeout = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("O Google Drive demorou para responder. Verifique a internet e tente novamente.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function loadPickerApi() {
   await waitForGoogleLibrary("O seletor do Google", () => Boolean(window.gapi?.load));
   if (window.google?.picker) return;
@@ -517,12 +532,12 @@ async function openFromDrive(file) {
   const fileId = file?.id || driveConfig().fileId;
   if (!fileId) throw new Error("Escolha uma planilha no Google Drive.");
   const token = await requestDriveToken();
-  const metaResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType`, {
+  const metaResponse = await fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!metaResponse.ok) throw new Error("Não foi possível localizar o arquivo no Drive.");
   const meta = await metaResponse.json();
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+  const response = await fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) throw new Error("Não foi possível baixar a planilha do Drive.");
@@ -532,11 +547,11 @@ async function openFromDrive(file) {
   parseWorkbook(new Uint8Array(await response.arrayBuffer()), meta.name, "drive");
 }
 
-async function saveToDrive(bytes) {
+async function saveToDrive(bytes, authorizedToken = "") {
   const { fileId } = driveConfig();
   if (!fileId) throw new Error("Nenhuma planilha do Drive está memorizada.");
-  const token = await requestDriveToken();
-  const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+  const token = authorizedToken || await requestDriveToken();
+  const response = await fetchWithTimeout(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -548,16 +563,7 @@ async function saveToDrive(bytes) {
     if (response.status === 401) {
       state.accessToken = "";
       state.tokenExpiresAt = 0;
-      const renewedToken = await requestDriveToken();
-      const retry = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${renewedToken}`,
-          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        },
-        body: bytes
-      });
-      if (retry.ok) return;
+      throw new Error("A sessão do Google expirou. Toque em Enviar agora para autorizar novamente.");
     }
     let detail = "";
     try {
@@ -571,8 +577,19 @@ async function saveToDrive(bytes) {
 async function saveAttendance() {
   const button = $("btn-salvar");
   button.disabled = true;
-  button.textContent = "Salvando...";
+  button.textContent = state.source === "drive" ? "Conectando..." : "Salvando...";
   try {
+    // No Safari/iPhone, o OAuth precisa começar diretamente no toque.
+    let driveToken = "";
+    let driveAuthError = null;
+    if (state.source === "drive") {
+      try {
+        driveToken = await requestDriveToken();
+      } catch (error) {
+        driveAuthError = error;
+      }
+    }
+    button.textContent = "Salvando...";
     const bytes = await buildPatchedWorkbook();
     state.bytes = bytes;
     await saveCachedWorkbook(bytes, state.fileName, state.source, state.source === "drive");
@@ -592,7 +609,8 @@ async function saveAttendance() {
       try {
         state.syncStatus = "pending";
         updateSyncUi();
-        await saveToDrive(bytes);
+        if (driveAuthError) throw driveAuthError;
+        await saveToDrive(bytes, driveToken);
         state.syncStatus = "synced";
         state.lastSyncError = "";
         await saveCachedWorkbook(bytes, state.fileName, state.source, false);

@@ -1,4 +1,4 @@
-const CACHE = "chamada-mestre-v6";
+const CACHE = "chamada-mestre-v7";
 const ASSETS = [
   "./",
   "./index.html",
