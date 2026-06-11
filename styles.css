@@ -82,6 +82,25 @@ main { max-width: 760px; margin: auto; padding: 8px 14px 110px; }
 .status-card { margin-top: 14px; padding: 15px; display: flex; gap: 12px; align-items: center; }
 .status-card p { color: var(--muted); font-size: .84rem; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px rgba(37,214,138,.12); }
+.sync-card {
+  display: grid;
+  grid-template-columns: 10px minmax(0,1fr) auto;
+  gap: 11px;
+  align-items: center;
+  margin: -4px 0 14px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 15px;
+}
+.sync-card p { color: var(--muted); font-size: .76rem; }
+.sync-card strong { font-size: .86rem; }
+.sync-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); }
+.sync-card.synced { border-color: rgba(37,214,138,.4); }
+.sync-card.synced .sync-dot { background: var(--green); }
+.sync-card.pending { border-color: rgba(255,180,76,.5); }
+.sync-card.error { border-color: rgba(255,95,105,.5); }
+.sync-card.error .sync-dot { background: var(--red); }
 .icon-btn, .back {
   border: 1px solid var(--line);
   background: var(--card);

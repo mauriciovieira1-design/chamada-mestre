@@ -9,7 +9,9 @@ const state = {
   alunos: [],
   history: [],
   accessToken: "",
-  tokenExpiresAt: 0
+  tokenExpiresAt: 0,
+  syncStatus: "local",
+  lastSyncError: ""
 };
 
 const $ = id => document.getElementById(id);
@@ -61,7 +63,7 @@ function openCacheDb() {
   });
 }
 
-async function saveCachedWorkbook(bytes, fileName, source) {
+async function saveCachedWorkbook(bytes, fileName, source, pendingSync = false) {
   const db = await openCacheDb();
   await new Promise((resolve, reject) => {
     const transaction = db.transaction("files", "readwrite");
@@ -69,6 +71,7 @@ async function saveCachedWorkbook(bytes, fileName, source) {
       bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
       fileName,
       source,
+      pendingSync,
       savedAt: Date.now()
     }, "current");
     transaction.oncomplete = resolve;
@@ -88,7 +91,7 @@ async function loadCachedWorkbook() {
   return cached;
 }
 
-function parseWorkbook(bytes, fileName, source = "local") {
+function parseWorkbook(bytes, fileName, source = "local", options = {}) {
   const workbook = XLSX.read(bytes, { type: "array", cellDates: true, cellFormula: true, raw: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
@@ -149,10 +152,54 @@ function parseWorkbook(bytes, fileName, source = "local") {
   state.fileName = fileName;
   state.source = source;
   state.turmas = turmas;
+  state.syncStatus = options.fromCache
+    ? (source === "drive" ? (options.pendingSync ? "pending" : "cached") : "local")
+    : (source === "drive" ? "synced" : "local");
+  state.lastSyncError = "";
   $("arquivo-nome").textContent = "Prof. Maurício";
-  saveCachedWorkbook(state.bytes, fileName, source).catch(() => {});
+  if (!options.fromCache) saveCachedWorkbook(state.bytes, fileName, source).catch(() => {});
+  updateSyncUi();
   renderTurmas();
   show("turmas");
+}
+
+function updateSyncUi() {
+  const card = $("sync-card");
+  if (!card) return;
+  card.classList.remove("synced", "pending", "error");
+  const title = $("sync-title");
+  const message = $("sync-message");
+  const button = $("btn-sync-drive");
+
+  if (state.source !== "drive") {
+    title.textContent = "Arquivo local";
+    message.textContent = "As alterações são baixadas como arquivo XLSX.";
+    button.hidden = true;
+    return;
+  }
+
+  button.hidden = false;
+  if (state.syncStatus === "synced") {
+    card.classList.add("synced");
+    title.textContent = "Google Drive sincronizado";
+    message.textContent = "A versão aberta corresponde ao arquivo do Drive.";
+    button.textContent = "Atualizar";
+  } else if (state.syncStatus === "pending") {
+    card.classList.add("pending");
+    title.textContent = "Salva no iPhone";
+    message.textContent = "Existem alterações aguardando envio ao Google Drive.";
+    button.textContent = "Enviar agora";
+  } else if (state.syncStatus === "error") {
+    card.classList.add("error");
+    title.textContent = "Não sincronizada";
+    message.textContent = state.lastSyncError || "Não foi possível acessar o Google Drive.";
+    button.textContent = "Tentar novamente";
+  } else {
+    card.classList.add("pending");
+    title.textContent = "Cópia deste iPhone";
+    message.textContent = "Toque em Atualizar para buscar a versão mais recente do Drive.";
+    button.textContent = "Atualizar";
+  }
 }
 
 function renderTurmas() {
@@ -368,16 +415,32 @@ function requestDriveToken() {
     return Promise.resolve(state.accessToken);
   }
   return new Promise((resolve, reject) => {
+    let finished = false;
+    const finish = (handler, value) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      handler(value);
+    };
+    const timer = setTimeout(() => {
+      finish(reject, new Error("O Google não respondeu. Verifique se o popup foi bloqueado e tente novamente."));
+    }, 20000);
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: "https://www.googleapis.com/auth/drive.file",
       callback: response => {
-        if (response.error) reject(new Error(response.error));
+        if (response.error) finish(reject, new Error(response.error_description || response.error));
         else {
           state.accessToken = response.access_token;
           state.tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
-          resolve(response.access_token);
+          finish(resolve, response.access_token);
         }
+      },
+      error_callback: error => {
+        const message = error?.type === "popup_failed_to_open"
+          ? "O iPhone bloqueou a janela do Google. Permita popups para este site."
+          : "A autorização do Google foi fechada ou não pôde ser concluída.";
+        finish(reject, new Error(message));
       }
     });
     client.requestAccessToken({ prompt: "" });
@@ -419,7 +482,7 @@ async function pickDriveFile() {
     throw new Error("Complete a configuração do Google Drive.");
   }
   await waitForGoogleLibrary("O login Google", () => Boolean(window.google?.accounts?.oauth2));
-  const token = state.accessToken || await requestDriveToken();
+  const token = await requestDriveToken();
   await loadPickerApi();
 
   return new Promise((resolve, reject) => {
@@ -453,7 +516,7 @@ async function pickDriveFile() {
 async function openFromDrive(file) {
   const fileId = file?.id || driveConfig().fileId;
   if (!fileId) throw new Error("Escolha uma planilha no Google Drive.");
-  const token = state.accessToken || await requestDriveToken();
+  const token = await requestDriveToken();
   const metaResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType`, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -471,7 +534,8 @@ async function openFromDrive(file) {
 
 async function saveToDrive(bytes) {
   const { fileId } = driveConfig();
-  const token = state.accessToken || await requestDriveToken();
+  if (!fileId) throw new Error("Nenhuma planilha do Drive está memorizada.");
+  const token = await requestDriveToken();
   const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
     method: "PATCH",
     headers: {
@@ -480,7 +544,28 @@ async function saveToDrive(bytes) {
     },
     body: bytes
   });
-  if (!response.ok) throw new Error("O Google Drive recusou a gravação.");
+  if (!response.ok) {
+    if (response.status === 401) {
+      state.accessToken = "";
+      state.tokenExpiresAt = 0;
+      const renewedToken = await requestDriveToken();
+      const retry = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${renewedToken}`,
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        body: bytes
+      });
+      if (retry.ok) return;
+    }
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = body?.error?.message || "";
+    } catch (_) {}
+    throw new Error(detail || `O Google Drive recusou a gravação (${response.status}).`);
+  }
 }
 
 async function saveAttendance() {
@@ -490,19 +575,7 @@ async function saveAttendance() {
   try {
     const bytes = await buildPatchedWorkbook();
     state.bytes = bytes;
-    await saveCachedWorkbook(bytes, state.fileName, state.source);
-    let synced = false;
-    if (state.source === "drive") {
-      try {
-        await saveToDrive(bytes);
-        synced = true;
-      } catch (error) {
-        toast("Salva no iPhone. Abra o Drive para sincronizar.");
-      }
-    } else {
-      download(bytes);
-      toast("Planilha salva sem alterar o modelo.");
-    }
+    await saveCachedWorkbook(bytes, state.fileName, state.source, state.source === "drive");
     localStorage.setItem(completedKey(state.turma, state.aula), "1");
     state.aula.completedInFile = true;
     localStorage.removeItem(draftKey(state.turma, state.aula));
@@ -514,8 +587,27 @@ async function saveAttendance() {
         });
       }
     });
+
+    if (state.source === "drive") {
+      try {
+        state.syncStatus = "pending";
+        updateSyncUi();
+        await saveToDrive(bytes);
+        state.syncStatus = "synced";
+        state.lastSyncError = "";
+        await saveCachedWorkbook(bytes, state.fileName, state.source, false);
+        toast(`Enviada ao Drive em ${state.aula.totalOccurrences} horário${state.aula.totalOccurrences > 1 ? "s" : ""}.`);
+      } catch (error) {
+        state.syncStatus = "error";
+        state.lastSyncError = error.message;
+        toast("Salva no iPhone, mas ainda não enviada ao Drive.");
+      }
+    } else {
+      download(bytes);
+      toast("Planilha salva sem alterar o modelo.");
+    }
+    updateSyncUi();
     $("draft-state").textContent = "Chamada salva";
-    if (synced) toast(`Salva no Drive em ${state.aula.totalOccurrences} horário${state.aula.totalOccurrences > 1 ? "s" : ""}.`);
     renderTurmas();
   } catch (error) {
     toast(error.message);
@@ -569,6 +661,31 @@ $("btn-drive").addEventListener("click", async () => {
     toast(error.message);
     const { clientId, apiKey, appId } = driveConfig();
     if (!clientId || !apiKey || !appId) $("config-dialog").showModal();
+  }
+});
+
+$("btn-sync-drive").addEventListener("click", async () => {
+  const button = $("btn-sync-drive");
+  button.disabled = true;
+  button.textContent = "Aguarde...";
+  try {
+    if (state.syncStatus === "pending" || state.syncStatus === "error") {
+      await saveToDrive(state.bytes);
+      state.syncStatus = "synced";
+      state.lastSyncError = "";
+      await saveCachedWorkbook(state.bytes, state.fileName, state.source, false);
+      toast("Alterações enviadas ao Google Drive.");
+    } else {
+      await openFromDrive();
+      toast("Planilha atualizada pelo Google Drive.");
+    }
+  } catch (error) {
+    state.syncStatus = "error";
+    state.lastSyncError = error.message;
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    updateSyncUi();
   }
 });
 
@@ -631,7 +748,10 @@ updateDriveUi();
 loadCachedWorkbook()
   .then(cached => {
     if (!cached?.bytes || state.bytes) return;
-    parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local");
+    parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local", {
+      fromCache: true,
+      pendingSync: Boolean(cached.pendingSync)
+    });
     toast("Planilha aberta do armazenamento seguro deste aparelho.");
   })
   .catch(() => {});
