@@ -11,7 +11,8 @@ const state = {
   accessToken: "",
   tokenExpiresAt: 0,
   syncStatus: "local",
-  lastSyncError: ""
+  lastSyncError: "",
+  pendingPatches: []
 };
 
 const $ = id => document.getElementById(id);
@@ -63,7 +64,7 @@ function openCacheDb() {
   });
 }
 
-async function saveCachedWorkbook(bytes, fileName, source, pendingSync = false) {
+async function saveCachedWorkbook(bytes, fileName, source, pendingPatches = []) {
   const db = await openCacheDb();
   await new Promise((resolve, reject) => {
     const transaction = db.transaction("files", "readwrite");
@@ -71,7 +72,8 @@ async function saveCachedWorkbook(bytes, fileName, source, pendingSync = false) 
       bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
       fileName,
       source,
-      pendingSync,
+      pendingSync: pendingPatches.length > 0,
+      pendingPatches,
       savedAt: Date.now()
     }, "current");
     transaction.oncomplete = resolve;
@@ -91,7 +93,7 @@ async function loadCachedWorkbook() {
   return cached;
 }
 
-function parseWorkbook(bytes, fileName, source = "local", options = {}) {
+function readWorkbookModel(bytes) {
   const workbook = XLSX.read(bytes, { type: "array", cellDates: true, cellFormula: true, raw: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
@@ -147,20 +149,40 @@ function parseWorkbook(bytes, fileName, source = "local", options = {}) {
   }
 
   if (!turmas.length) throw new Error("Nenhuma turma compatível com a Mestre foi encontrada.");
+  return { workbook, turmas };
+}
+
+function parseWorkbook(bytes, fileName, source = "local", options = {}) {
+  const { workbook, turmas } = readWorkbookModel(bytes);
   state.bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   state.workbook = workbook;
   state.fileName = fileName;
   state.source = source;
   state.turmas = turmas;
+  state.pendingPatches = Array.isArray(options.pendingPatches) ? options.pendingPatches : [];
   state.syncStatus = options.fromCache
-    ? (source === "drive" ? (options.pendingSync ? "pending" : "cached") : "local")
+    ? (source === "drive" ? (state.pendingPatches.length ? "pending" : "cached") : "local")
     : (source === "drive" ? "synced" : "local");
-  state.lastSyncError = "";
+  state.lastSyncError = options.unsafeLegacyPending
+    ? "Uma gravação antiga foi bloqueada para não sobrescrever a planilha do Drive. Atualize a planilha antes de continuar."
+    : "";
+  if (options.unsafeLegacyPending) state.syncStatus = "error";
   $("arquivo-nome").textContent = "Prof. Maurício";
-  if (!options.fromCache) saveCachedWorkbook(state.bytes, fileName, source).catch(() => {});
+  if (!options.fromCache) saveCachedWorkbook(state.bytes, fileName, source, []).catch(() => {});
   updateSyncUi();
   renderTurmas();
   show("turmas");
+}
+
+function refreshWorkbookState(bytes) {
+  const currentTurma = state.turma?.name;
+  const currentDate = state.aula?.label;
+  const { workbook, turmas } = readWorkbookModel(bytes);
+  state.bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  state.workbook = workbook;
+  state.turmas = turmas;
+  state.turma = turmas.find(item => normalizedName(item.name) === normalizedName(currentTurma)) || null;
+  state.aula = state.turma?.lessons.find(item => item.label === currentDate) || null;
 }
 
 function updateSyncUi() {
@@ -187,7 +209,8 @@ function updateSyncUi() {
   } else if (state.syncStatus === "pending") {
     card.classList.add("pending");
     title.textContent = "Salva no iPhone";
-    message.textContent = "Existem alterações aguardando envio ao Google Drive.";
+    const total = state.pendingPatches.length;
+    message.textContent = `${total} chamada${total === 1 ? "" : "s"} aguardando envio seguro ao Google Drive.`;
     button.textContent = "Enviar agora";
   } else if (state.syncStatus === "error") {
     card.classList.add("error");
@@ -232,6 +255,7 @@ function draftKey(turma, lesson) {
 }
 
 function isLessonCompleted(turma, lesson) {
+  if (state.source === "drive") return lesson.completedInFile;
   return lesson.completedInFile || localStorage.getItem(completedKey(turma, lesson)) === "1";
 }
 
@@ -268,11 +292,15 @@ function openLesson(index) {
   const sourceColumn = state.aula.colIndexes.find(colIndex =>
     state.turma.students.some(student => String(student.row[colIndex] ?? "").trim() !== "")
   ) ?? state.aula.colIndexes[0];
-  state.alunos = state.turma.students.map(student => ({
-    rowIndex: student.rowIndex,
-    name: student.name,
-    status: draft?.[student.rowIndex] || normalizedStatus(student.row[sourceColumn])
-  }));
+  state.alunos = state.turma.students.map(student => {
+    const originalStatus = normalizedStatus(student.row[sourceColumn]);
+    return {
+      rowIndex: student.rowIndex,
+      name: student.name,
+      originalStatus,
+      status: draft?.[student.rowIndex] || originalStatus
+    };
+  });
   state.history = [];
   $("chamada-turma").textContent = state.turma.name;
   $("chamada-data").textContent = state.aula.totalOccurrences > 1
@@ -348,24 +376,107 @@ function patchCellInRow(rowXml, address, status) {
   return rowXml.replace("</row>", `${cell}</row>`);
 }
 
-async function buildPatchedWorkbook() {
-  const zip = await JSZip.loadAsync(state.bytes);
+function normalizedName(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function createAttendancePatch() {
+  return {
+    turmaName: state.turma.name,
+    dateLabel: state.aula.label,
+    statuses: state.alunos.map(student => ({
+      name: student.name,
+      baseStatuses: state.aula.colIndexes.map(colIndex => {
+        const sourceStudent = state.turma.students.find(item => item.rowIndex === student.rowIndex);
+        return normalizedStatus(sourceStudent?.row[colIndex]);
+      }),
+      status: normalizedStatus(student.status)
+    }))
+  };
+}
+
+function upsertPendingPatch(patches, patch) {
+  const key = `${normalizedName(patch.turmaName)}|${patch.dateLabel}`;
+  const existing = patches.find(item => `${normalizedName(item.turmaName)}|${item.dateLabel}` === key);
+  if (existing) {
+    const baseByName = new Map(existing.statuses.map(item => [normalizedName(item.name), item.baseStatuses]));
+    patch.statuses.forEach(item => {
+      item.baseStatuses = baseByName.get(normalizedName(item.name)) ?? item.baseStatuses;
+    });
+  }
+  return [
+    ...patches.filter(item => `${normalizedName(item.turmaName)}|${item.dateLabel}` !== key),
+    patch
+  ];
+}
+
+function resolvePatchTarget(model, patch) {
+  const turma = model.turmas.find(item => normalizedName(item.name) === normalizedName(patch.turmaName));
+  if (!turma) throw new Error(`A turma ${patch.turmaName} não foi encontrada na versão atual do Drive.`);
+  const lesson = turma.lessons.find(item => item.label === patch.dateLabel);
+  if (!lesson) throw new Error(`A data ${patch.dateLabel} não foi encontrada na turma ${patch.turmaName}.`);
+
+  const remoteStudents = new Map();
+  turma.students.forEach(student => {
+    const key = normalizedName(student.name);
+    if (remoteStudents.has(key)) {
+      throw new Error(`Existem alunos com nome repetido na turma ${patch.turmaName}. O envio foi bloqueado.`);
+    }
+    remoteStudents.set(key, student);
+  });
+  if (remoteStudents.size !== patch.statuses.length) {
+    throw new Error(`A lista de alunos da turma ${patch.turmaName} mudou. Atualize a planilha antes de salvar.`);
+  }
+
+  const students = patch.statuses.map(item => {
+    const student = remoteStudents.get(normalizedName(item.name));
+    if (!student) {
+      throw new Error(`O aluno ${item.name} não foi encontrado na versão atual do Drive.`);
+    }
+    if (!Array.isArray(item.baseStatuses) || item.baseStatuses.length !== lesson.colIndexes.length) {
+      throw new Error("Uma alteração pendente antiga foi bloqueada. Atualize a planilha e refaça essa chamada.");
+    }
+    const currentStatuses = lesson.colIndexes.map(colIndex => normalizedStatus(student.row[colIndex]));
+    const requestedStatus = normalizedStatus(item.status);
+    const alreadyApplied = currentStatuses.every(status => status === requestedStatus);
+    const unchangedSinceOpen = currentStatuses.every((status, index) =>
+      status === normalizedStatus(item.baseStatuses[index])
+    );
+    if (!alreadyApplied && !unchangedSinceOpen) {
+      throw new Error(`A chamada de ${patch.dateLabel} foi alterada no Drive. Atualize antes de corrigir novamente.`);
+    }
+    return { ...student, status: requestedStatus };
+  });
+  return { lesson, students };
+}
+
+async function buildPatchedWorkbook(baseBytes, patches) {
+  const model = readWorkbookModel(baseBytes);
+  const targets = patches.map(patch => resolvePatchTarget(model, patch));
+  const zip = await JSZip.loadAsync(baseBytes);
   const sheetPath = "xl/worksheets/sheet1.xml";
   const file = zip.file(sheetPath);
   if (!file) throw new Error("A primeira aba da planilha não foi encontrada.");
   let xml = await file.async("string");
 
-  state.alunos.forEach(student => {
-    const excelRow = student.rowIndex + 1;
-    const rowRegex = new RegExp(`<row\\b([^>]*\\br="${excelRow}"[^>]*)>[\\s\\S]*?<\\/row>`);
-    const match = xml.match(rowRegex);
-    if (!match) throw new Error(`Linha ${excelRow} não encontrada no modelo.`);
-    let rowXml = match[0];
-    state.aula.colIndexes.forEach(colIndex => {
-      const address = `${colName(colIndex)}${excelRow}`;
-      rowXml = patchCellInRow(rowXml, address, student.status);
+  targets.forEach(({ lesson, students }) => {
+    students.forEach(student => {
+      const excelRow = student.rowIndex + 1;
+      const rowRegex = new RegExp(`<row\\b([^>]*\\br="${excelRow}"[^>]*)>[\\s\\S]*?<\\/row>`);
+      const match = xml.match(rowRegex);
+      if (!match) throw new Error(`Linha ${excelRow} não encontrada no modelo.`);
+      let rowXml = match[0];
+      lesson.colIndexes.forEach(colIndex => {
+        const address = `${colName(colIndex)}${excelRow}`;
+        rowXml = patchCellInRow(rowXml, address, student.status);
+      });
+      xml = xml.replace(match[0], rowXml);
     });
-    xml = xml.replace(match[0], rowXml);
   });
 
   zip.file(sheetPath, xml);
@@ -528,30 +639,51 @@ async function pickDriveFile() {
   });
 }
 
-async function openFromDrive(file) {
-  const fileId = file?.id || driveConfig().fileId;
+async function getDriveMetadata(token, fileId = driveConfig().fileId) {
   if (!fileId) throw new Error("Escolha uma planilha no Google Drive.");
-  const token = await requestDriveToken();
-  const metaResponse = await fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType`, {
+  const response = await fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=name,mimeType,version,modifiedTime,size`, {
     headers: { Authorization: `Bearer ${token}` }
   });
-  if (!metaResponse.ok) throw new Error("Não foi possível localizar o arquivo no Drive.");
-  const meta = await metaResponse.json();
+  if (!response.ok) throw new Error("Não foi possível localizar o arquivo no Drive.");
+  return response.json();
+}
+
+async function downloadLatestDriveWorkbook(token, fileId = driveConfig().fileId) {
+  const before = await getDriveMetadata(token, fileId);
   const response = await fetchWithTimeout(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) throw new Error("Não foi possível baixar a planilha do Drive.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const after = await getDriveMetadata(token, fileId);
+  if (String(before.version) !== String(after.version)) {
+    throw new Error("A planilha mudou enquanto era baixada. Tente novamente.");
+  }
+  return { bytes, meta: after };
+}
+
+async function openFromDrive(file) {
+  const fileId = file?.id || driveConfig().fileId;
+  if (!fileId) throw new Error("Escolha uma planilha no Google Drive.");
+  const token = await requestDriveToken();
+  const { bytes, meta } = await downloadLatestDriveWorkbook(token, fileId);
   localStorage.setItem("mestre:google-file-id", fileId);
   localStorage.setItem("mestre:google-file-name", meta.name);
   updateDriveUi();
-  parseWorkbook(new Uint8Array(await response.arrayBuffer()), meta.name, "drive");
+  parseWorkbook(bytes, meta.name, "drive");
 }
 
-async function saveToDrive(bytes, authorizedToken = "") {
+async function saveToDrive(bytes, authorizedToken = "", expectedVersion = "") {
   const { fileId } = driveConfig();
   if (!fileId) throw new Error("Nenhuma planilha do Drive está memorizada.");
   const token = authorizedToken || await requestDriveToken();
-  const response = await fetchWithTimeout(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+  if (expectedVersion) {
+    const current = await getDriveMetadata(token, fileId);
+    if (String(current.version) !== String(expectedVersion)) {
+      throw new Error("A planilha foi alterada em outro lugar. O envio foi bloqueado; tente novamente.");
+    }
+  }
+  const response = await fetchWithTimeout(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media&fields=id,version,modifiedTime`, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -572,6 +704,7 @@ async function saveToDrive(bytes, authorizedToken = "") {
     } catch (_) {}
     throw new Error(detail || `O Google Drive recusou a gravação (${response.status}).`);
   }
+  return response.json();
 }
 
 async function saveAttendance() {
@@ -590,9 +723,14 @@ async function saveAttendance() {
       }
     }
     button.textContent = "Salvando...";
-    const bytes = await buildPatchedWorkbook();
-    state.bytes = bytes;
-    await saveCachedWorkbook(bytes, state.fileName, state.source, state.source === "drive");
+    const patch = createAttendancePatch();
+    const pendingPatches = state.source === "drive"
+      ? upsertPendingPatch(state.pendingPatches, patch)
+      : [];
+    const localBytes = await buildPatchedWorkbook(state.bytes, [patch]);
+    state.bytes = localBytes;
+    state.pendingPatches = pendingPatches;
+    await saveCachedWorkbook(localBytes, state.fileName, state.source, pendingPatches);
     localStorage.setItem(completedKey(state.turma, state.aula), "1");
     state.aula.completedInFile = true;
     localStorage.removeItem(draftKey(state.turma, state.aula));
@@ -610,18 +748,22 @@ async function saveAttendance() {
         state.syncStatus = "pending";
         updateSyncUi();
         if (driveAuthError) throw driveAuthError;
-        await saveToDrive(bytes, driveToken);
+        const latest = await downloadLatestDriveWorkbook(driveToken);
+        const mergedBytes = await buildPatchedWorkbook(latest.bytes, pendingPatches);
+        await saveToDrive(mergedBytes, driveToken, latest.meta.version);
+        refreshWorkbookState(mergedBytes);
+        state.pendingPatches = [];
         state.syncStatus = "synced";
         state.lastSyncError = "";
-        await saveCachedWorkbook(bytes, state.fileName, state.source, false);
+        await saveCachedWorkbook(mergedBytes, state.fileName, state.source, []);
         toast(`Enviada ao Drive em ${state.aula.totalOccurrences} horário${state.aula.totalOccurrences > 1 ? "s" : ""}.`);
       } catch (error) {
         state.syncStatus = "error";
         state.lastSyncError = error.message;
-        toast("Salva no iPhone, mas ainda não enviada ao Drive.");
+        toast("Salva no iPhone. O Drive não foi alterado.");
       }
     } else {
-      download(bytes);
+      download(localBytes);
       toast("Planilha salva sem alterar o modelo.");
     }
     updateSyncUi();
@@ -687,11 +829,16 @@ $("btn-sync-drive").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = "Aguarde...";
   try {
-    if (state.syncStatus === "pending" || state.syncStatus === "error") {
-      await saveToDrive(state.bytes);
+    if (state.pendingPatches.length) {
+      const token = await requestDriveToken();
+      const latest = await downloadLatestDriveWorkbook(token);
+      const mergedBytes = await buildPatchedWorkbook(latest.bytes, state.pendingPatches);
+      await saveToDrive(mergedBytes, token, latest.meta.version);
+      refreshWorkbookState(mergedBytes);
+      state.pendingPatches = [];
       state.syncStatus = "synced";
       state.lastSyncError = "";
-      await saveCachedWorkbook(state.bytes, state.fileName, state.source, false);
+      await saveCachedWorkbook(mergedBytes, state.fileName, state.source, []);
       toast("Alterações enviadas ao Google Drive.");
     } else {
       await openFromDrive();
@@ -766,9 +913,11 @@ updateDriveUi();
 loadCachedWorkbook()
   .then(cached => {
     if (!cached?.bytes || state.bytes) return;
+    const pendingPatches = Array.isArray(cached.pendingPatches) ? cached.pendingPatches : [];
     parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local", {
       fromCache: true,
-      pendingSync: Boolean(cached.pendingSync)
+      pendingPatches,
+      unsafeLegacyPending: Boolean(cached.pendingSync) && pendingPatches.length === 0
     });
     toast("Planilha aberta do armazenamento seguro deste aparelho.");
   })

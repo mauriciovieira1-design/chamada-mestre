@@ -15,6 +15,10 @@ alunos. A planilha é selecionada pelo próprio usuário no aparelho ou no Drive
 - `F` significa falta.
 - `I` significa ausência justificada/enfermidade.
 - Ao salvar, somente as células da aula selecionada são alteradas no XML da primeira aba.
+- Antes de enviar, o aplicativo baixa a versão mais recente do Drive e reaplica
+  somente as chamadas pendentes.
+- Se a mesma turma/data ou a lista de alunos mudou no Drive, o envio é bloqueado
+  para impedir a perda de chamadas.
 
 ## Executar localmente
 
@@ -51,3 +55,7 @@ A planilha escolhida fica memorizada no aparelho. Uma cópia privada também é
 mantida no armazenamento local do PWA, permitindo abrir e fazer chamadas sem
 selecionar o arquivo novamente. Quando o acesso temporário do Google expirar,
 o aplicativo solicitará uma nova autorização somente ao sincronizar.
+
+Uma chamada feita sem conexão fica armazenada como uma operação pendente
+(turma, data e alunos), e não como um arquivo inteiro pronto para substituir o
+Drive. Na sincronização, ela é aplicada sobre a versão mais recente da planilha.
