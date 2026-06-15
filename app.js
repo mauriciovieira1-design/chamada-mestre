@@ -2,6 +2,8 @@ const state = {
   bytes: null,
   workbook: null,
   fileName: "",
+  fileId: "",
+  fileVersion: "",
   source: "local",
   turmas: [],
   turma: null,
@@ -64,13 +66,22 @@ function openCacheDb() {
   });
 }
 
-async function saveCachedWorkbook(bytes, fileName, source, pendingPatches = []) {
+async function saveCachedWorkbook(
+  bytes,
+  fileName,
+  source,
+  pendingPatches = [],
+  fileId = state.fileId,
+  fileVersion = state.fileVersion
+) {
   const db = await openCacheDb();
   await new Promise((resolve, reject) => {
     const transaction = db.transaction("files", "readwrite");
     transaction.objectStore("files").put({
       bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
       fileName,
+      fileId,
+      fileVersion,
       source,
       pendingSync: pendingPatches.length > 0,
       pendingPatches,
@@ -132,12 +143,14 @@ function readWorkbookModel(bytes) {
     const lessons = [...lessonGroups.values()];
     lessons.forEach(lesson => {
       lesson.totalOccurrences = lesson.colIndexes.length;
-      lesson.completedInFile = lesson.colIndexes.every(colIndex =>
-        students.some(student => {
-          const value = student.row[colIndex];
-          return value !== null && value !== undefined && String(value).trim() !== "";
-        })
-      );
+      lesson.completedInFile = lesson.colIndexes.every(colIndex => {
+        const values = students.map(student => String(student.row[colIndex] ?? "").trim().toUpperCase());
+        const hasAbsence = values.some(value => value === "F" || value === "I" || value === "1" || value === "J");
+        const fullyRegistered = values.length > 0 && values.every(value =>
+          value === "0" || value === "F" || value === "I" || value === "1" || value === "J"
+        );
+        return hasAbsence || fullyRegistered;
+      });
     });
 
     turmas.push({
@@ -157,6 +170,8 @@ function parseWorkbook(bytes, fileName, source = "local", options = {}) {
   state.bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   state.workbook = workbook;
   state.fileName = fileName;
+  state.fileId = options.fileId || "";
+  state.fileVersion = options.fileVersion || "";
   state.source = source;
   state.turmas = turmas;
   state.pendingPatches = Array.isArray(options.pendingPatches) ? options.pendingPatches : [];
@@ -168,7 +183,7 @@ function parseWorkbook(bytes, fileName, source = "local", options = {}) {
     : "";
   if (options.unsafeLegacyPending) state.syncStatus = "error";
   $("arquivo-nome").textContent = "Prof. Maurício";
-  if (!options.fromCache) saveCachedWorkbook(state.bytes, fileName, source, []).catch(() => {});
+  if (!options.fromCache) saveCachedWorkbook(state.bytes, fileName, source, [], state.fileId).catch(() => {});
   updateSyncUi();
   renderTurmas();
   show("turmas");
@@ -246,17 +261,15 @@ function renderTurmas() {
   }).join("");
 }
 
-function completedKey(turma, lesson) {
-  return `mestre:done:${state.fileName}:${turma.name}:${lesson.label}`;
-}
-
 function draftKey(turma, lesson) {
-  return `mestre:draft:${state.fileName}:${turma.name}:${lesson.label}`;
+  const fileKey = state.source === "drive" && state.fileId
+    ? `drive:${state.fileId}:version:${state.fileVersion || "unknown"}`
+    : `local:${state.fileName}`;
+  return `mestre:draft:v2:${fileKey}:${turma.name}:${lesson.label}`;
 }
 
 function isLessonCompleted(turma, lesson) {
-  if (state.source === "drive") return lesson.completedInFile;
-  return lesson.completedInFile || localStorage.getItem(completedKey(turma, lesson)) === "1";
+  return lesson.completedInFile;
 }
 
 function openTurma(index) {
@@ -670,7 +683,7 @@ async function openFromDrive(file) {
   localStorage.setItem("mestre:google-file-id", fileId);
   localStorage.setItem("mestre:google-file-name", meta.name);
   updateDriveUi();
-  parseWorkbook(bytes, meta.name, "drive");
+  parseWorkbook(bytes, meta.name, "drive", { fileId, fileVersion: String(meta.version || "") });
 }
 
 async function saveToDrive(bytes, authorizedToken = "", expectedVersion = "") {
@@ -730,8 +743,7 @@ async function saveAttendance() {
     const localBytes = await buildPatchedWorkbook(state.bytes, [patch]);
     state.bytes = localBytes;
     state.pendingPatches = pendingPatches;
-    await saveCachedWorkbook(localBytes, state.fileName, state.source, pendingPatches);
-    localStorage.setItem(completedKey(state.turma, state.aula), "1");
+    await saveCachedWorkbook(localBytes, state.fileName, state.source, pendingPatches, state.fileId);
     state.aula.completedInFile = true;
     localStorage.removeItem(draftKey(state.turma, state.aula));
     state.alunos.forEach(student => {
@@ -750,12 +762,20 @@ async function saveAttendance() {
         if (driveAuthError) throw driveAuthError;
         const latest = await downloadLatestDriveWorkbook(driveToken);
         const mergedBytes = await buildPatchedWorkbook(latest.bytes, pendingPatches);
-        await saveToDrive(mergedBytes, driveToken, latest.meta.version);
+        const savedMeta = await saveToDrive(mergedBytes, driveToken, latest.meta.version);
         refreshWorkbookState(mergedBytes);
+        state.fileVersion = String(savedMeta.version || "");
         state.pendingPatches = [];
         state.syncStatus = "synced";
         state.lastSyncError = "";
-        await saveCachedWorkbook(mergedBytes, state.fileName, state.source, []);
+        await saveCachedWorkbook(
+          mergedBytes,
+          state.fileName,
+          state.source,
+          [],
+          state.fileId,
+          state.fileVersion
+        );
         toast(`Enviada ao Drive em ${state.aula.totalOccurrences} horário${state.aula.totalOccurrences > 1 ? "s" : ""}.`);
       } catch (error) {
         state.syncStatus = "error";
@@ -833,12 +853,20 @@ $("btn-sync-drive").addEventListener("click", async () => {
       const token = await requestDriveToken();
       const latest = await downloadLatestDriveWorkbook(token);
       const mergedBytes = await buildPatchedWorkbook(latest.bytes, state.pendingPatches);
-      await saveToDrive(mergedBytes, token, latest.meta.version);
+      const savedMeta = await saveToDrive(mergedBytes, token, latest.meta.version);
       refreshWorkbookState(mergedBytes);
+      state.fileVersion = String(savedMeta.version || "");
       state.pendingPatches = [];
       state.syncStatus = "synced";
       state.lastSyncError = "";
-      await saveCachedWorkbook(mergedBytes, state.fileName, state.source, []);
+      await saveCachedWorkbook(
+        mergedBytes,
+        state.fileName,
+        state.source,
+        [],
+        state.fileId,
+        state.fileVersion
+      );
       toast("Alterações enviadas ao Google Drive.");
     } else {
       await openFromDrive();
@@ -916,6 +944,8 @@ loadCachedWorkbook()
     const pendingPatches = Array.isArray(cached.pendingPatches) ? cached.pendingPatches : [];
     parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local", {
       fromCache: true,
+      fileId: cached.fileId || "",
+      fileVersion: cached.fileVersion || "",
       pendingPatches,
       unsafeLegacyPending: Boolean(cached.pendingSync) && pendingPatches.length === 0
     });

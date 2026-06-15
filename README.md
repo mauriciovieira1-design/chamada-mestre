@@ -19,6 +19,8 @@ alunos. A planilha é selecionada pelo próprio usuário no aparelho ou no Drive
   somente as chamadas pendentes.
 - Se a mesma turma/data ou a lista de alunos mudou no Drive, o envio é bloqueado
   para impedir a perda de chamadas.
+- O estado `Realizada` é calculado novamente pelo conteúdo da versão atual do
+  arquivo; marcações e rascunhos de outra planilha ou versão não são reutilizados.
 
 ## Executar localmente
 
