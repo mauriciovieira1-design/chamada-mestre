@@ -19,6 +19,7 @@ const state = {
 
 const $ = id => document.getElementById(id);
 const views = ["home", "turmas", "aulas", "chamada"];
+const CACHE_SCHEMA = "safe-v10";
 
 function show(view) {
   views.forEach(name => $(`view-${name}`).classList.toggle("active", name === view));
@@ -83,6 +84,7 @@ async function saveCachedWorkbook(
       fileId,
       fileVersion,
       source,
+      schemaVersion: CACHE_SCHEMA,
       pendingSync: pendingPatches.length > 0,
       pendingPatches,
       savedAt: Date.now()
@@ -265,7 +267,7 @@ function draftKey(turma, lesson) {
   const fileKey = state.source === "drive" && state.fileId
     ? `drive:${state.fileId}:version:${state.fileVersion || "unknown"}`
     : `local:${state.fileName}`;
-  return `mestre:draft:v2:${fileKey}:${turma.name}:${lesson.label}`;
+  return `mestre:draft:v3:${fileKey}:${turma.name}:${lesson.label}`;
 }
 
 function isLessonCompleted(turma, lesson) {
@@ -377,15 +379,33 @@ function colName(index) {
   return name;
 }
 
+function colIndexFromName(name) {
+  return String(name).split("").reduce((total, char) =>
+    total * 26 + char.toUpperCase().charCodeAt(0) - 64, 0
+  ) - 1;
+}
+
+function cellColIndex(address) {
+  return colIndexFromName(String(address).replace(/[0-9]/g, ""));
+}
+
 function patchCellInRow(rowXml, address, status) {
   const cellRegex = new RegExp(`<c\\b([^>]*\\br="${address}"[^>]*)>[\\s\\S]*?<\\/c>`);
   const selfClosingRegex = new RegExp(`<c\\b([^>]*\\br="${address}"[^>]*)\\/>`);
   const match = rowXml.match(cellRegex) || rowXml.match(selfClosingRegex);
+  if (status !== "F" && status !== "I") {
+    return match ? rowXml.replace(match[0], "") : rowXml;
+  }
   const attributes = match ? match[1].replace(/\s+t="[^"]*"/g, "") : ` r="${address}" s="1"`;
-  const cell = status === "F" || status === "I"
-    ? `<c${attributes} t="inlineStr"><is><t>${status}</t></is></c>`
-    : `<c${attributes}><v>0</v></c>`;
+  const cell = `<c${attributes} t="inlineStr"><is><t>${status}</t></is></c>`;
   if (match) return rowXml.replace(match[0], cell);
+
+  const targetColIndex = cellColIndex(address);
+  const cells = [...rowXml.matchAll(/<c\b[^>]*\br="([A-Z]+[0-9]+)"[^>]*(?:\/>|>[\s\S]*?<\/c>)/g)];
+  const next = cells.find(item => cellColIndex(item[1]) > targetColIndex);
+  if (next) {
+    return rowXml.slice(0, next.index) + cell + rowXml.slice(next.index);
+  }
   return rowXml.replace("</row>", `${cell}</row>`);
 }
 
@@ -941,13 +961,14 @@ updateDriveUi();
 loadCachedWorkbook()
   .then(cached => {
     if (!cached?.bytes || state.bytes) return;
-    const pendingPatches = Array.isArray(cached.pendingPatches) ? cached.pendingPatches : [];
+    const cacheIsCurrent = cached.schemaVersion === CACHE_SCHEMA;
+    const pendingPatches = cacheIsCurrent && Array.isArray(cached.pendingPatches) ? cached.pendingPatches : [];
     parseWorkbook(new Uint8Array(cached.bytes), cached.fileName, cached.source || "local", {
       fromCache: true,
       fileId: cached.fileId || "",
       fileVersion: cached.fileVersion || "",
       pendingPatches,
-      unsafeLegacyPending: Boolean(cached.pendingSync) && pendingPatches.length === 0
+      unsafeLegacyPending: Boolean(cached.pendingSync) && !cacheIsCurrent
     });
     toast("Planilha aberta do armazenamento seguro deste aparelho.");
   })

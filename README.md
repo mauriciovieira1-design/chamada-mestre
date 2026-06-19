@@ -21,6 +21,8 @@ alunos. A planilha é selecionada pelo próprio usuário no aparelho ou no Drive
   para impedir a perda de chamadas.
 - O estado `Realizada` é calculado novamente pelo conteúdo da versão atual do
   arquivo; marcações e rascunhos de outra planilha ou versão não são reutilizados.
+- Ao salvar, presença volta a ser célula vazia; o app grava apenas `F` e `I`.
+- A escrita das células mantém a ordem original das colunas dentro do XML.
 
 ## Executar localmente
 
